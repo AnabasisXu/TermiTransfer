@@ -15,6 +15,9 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
 # ─── Config Path ───
 
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".termi_transfer_config.json")
+FONT = ("Microsoft YaHei UI", 9)
+FONT_BOLD = ("Microsoft YaHei UI", 11, "bold")
+FONT_TEXT = ("Microsoft YaHei UI", 11)
 
 def _get_fernet_key():
     """Derive a Fernet key from machine-specific info."""
@@ -147,7 +150,7 @@ class RoundedTabBar:
         frame.pack_forget()
         btn = tk.Button(
             self.bar, text=text, relief="flat", bd=0, highlightthickness=0, takefocus=0, cursor="hand2",
-            padx=self.PAD_X, pady=4, font=("Microsoft YaHei UI", 11, "bold"),
+            padx=self.PAD_X, pady=4, font=FONT_BOLD,
             activeforeground="#ffffff", underline=underline,
         )
         btn.pack(side=tk.LEFT, padx=(0, 4))
@@ -243,7 +246,7 @@ class TermuxTransferApp:
         btn = tk.Button(
             parent, text=text, command=command, relief="flat", bd=0,
             highlightthickness=0, takefocus=0, cursor="hand2",
-            padx=10, pady=3, font=("Microsoft YaHei UI", 11, "bold"),
+            padx=10, pady=3, font=FONT_BOLD,
             bg=t["btn_bg"], fg=t["btn_fg"],
             activebackground=t.get("btn_hover", t["accent"]),
             activeforeground="#ffffff",
@@ -257,7 +260,8 @@ class TermuxTransferApp:
                 btn.configure(bg=t.get("btn_hover", t["accent"]))
 
         def on_leave(e):
-            btn.configure(bg=t["btn_bg"])
+            if btn["state"] != "disabled":
+                btn.configure(bg=t["btn_bg"])
 
         btn.bind("<Enter>", on_enter)
         btn.bind("<Leave>", on_leave)
@@ -305,7 +309,8 @@ class TermuxTransferApp:
 
         style.configure("TCheckbutton", background=t["bg"], foreground=t["fg"])
 
-        style.configure("TLabelframe", background=t["bg"], foreground=t["fg"])
+        style.configure("TLabelframe", background=t["bg"], foreground=t["fg"],
+                         bordercolor=t["bg"], relief="flat")
 
         style.configure("TLabelframe.Label", background=t["bg"], foreground=t["accent"])
 
@@ -340,8 +345,8 @@ class TermuxTransferApp:
                   background=[("active", t["accent"])],
                   foreground=[("active", "#ffffff")])
         # Font for all text-like widgets
-        font_spec = ("Microsoft YaHei UI", 9)
-        text_font = ("Microsoft YaHei UI", 11)
+        font_spec = FONT
+        text_font = FONT_TEXT
         # Text widgets (ScrolledText)
         for wname in ("log_output", "file_text", "remote_files_input", "config_preview"):
             w = getattr(self, wname, None)
@@ -442,7 +447,7 @@ class TermuxTransferApp:
         # Connection Settings (always visible, not rebuilt on profile switch)
         self._build_connection_frame()
         # Dynamic area: tabs (built once, data refreshed on profile switch)
-        self._rebuild_dynamic_area()
+        self._build_tabs()
         # Log (created once, never destroyed)
         self._build_log_area()
 
@@ -456,7 +461,7 @@ class TermuxTransferApp:
         row1 = ttk.Frame(conn_frame)
         row1.pack(fill=tk.X, pady=(0, 5))
 
-        ttk.Label(row1, text="📋 Profile:", font=("Microsoft YaHei UI", 11, "bold")).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row1, text="📋 Profile:", font=FONT_BOLD).pack(side=tk.LEFT, padx=5)
         self.profile_var = tk.StringVar(value=self.active_profile)
         profile_names = list(self.profiles.keys())
         self.profile_combo = ttk.Combobox(
@@ -494,12 +499,15 @@ class TermuxTransferApp:
         ttk.Label(row2, text="🖥 Host:", underline=3).pack(side=tk.LEFT, padx=5)
         self.host_entry = ttk.Entry(row2)
         self.host_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.host_entry.bind("<KeyRelease>", lambda e: self._update_conn_summary())
         ttk.Label(row2, text="🔌 Port:", underline=6).pack(side=tk.LEFT, padx=5)
         self.port_entry = ttk.Entry(row2, width=10)
         self.port_entry.pack(side=tk.LEFT, padx=5)
+        self.port_entry.bind("<KeyRelease>", lambda e: self._update_conn_summary())
         ttk.Label(row2, text="👤 User:", underline=6).pack(side=tk.LEFT, padx=5)
         self.user_entry = ttk.Entry(row2)
         self.user_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.user_entry.bind("<KeyRelease>", lambda e: self._update_conn_summary())
 
 
 
@@ -544,7 +552,7 @@ class TermuxTransferApp:
         port = self.port_entry.get().strip() or "22"
         self._conn_summary_var.set(f"{user}@{host}:{port}")
 
-    def _rebuild_dynamic_area(self):
+    def _build_tabs(self):
         """Destroy and recreate tabs (called only from setup_ui)."""
         if self._dynamic_frame is not None:
             self._dynamic_frame.destroy()
@@ -577,6 +585,15 @@ class TermuxTransferApp:
         clear_btn.pack(anchor="e", pady=(0, 2))
         self.log_output = scrolledtext.ScrolledText(log_frame, state="disabled", height=10)
         self.log_output.pack(fill=tk.BOTH, expand=True)
+        # Progress bar (hidden by default)
+        self.progress_frame = ttk.Frame(log_frame)
+        self.progress_frame.pack(fill=tk.X, pady=(2, 0))
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(self.progress_frame, variable=self.progress_var, maximum=100)
+        self.progress_bar.pack(fill=tk.X, side=tk.LEFT, expand=True)
+        self.progress_label = ttk.Label(self.progress_frame, text="", width=20)
+        self.progress_label.pack(side=tk.RIGHT, padx=(5, 0))
+        self.progress_frame.pack_forget()  # Hidden initially
 
     def _build_upload_tab(self):
         layout = ttk.Frame(self.upload_tab, padding="10")
@@ -646,7 +663,7 @@ class TermuxTransferApp:
 
         # Apply theme to new entries
         t = self.THEMES[self.current_theme]
-        font_spec = ("Microsoft YaHei UI", 9)
+        font_spec = FONT
         for ent in self._preset_entries.values():
             try:
                 ent.configure(foreground=t["entry_fg"], fieldbackground=t["entry_bg"],
@@ -700,7 +717,7 @@ class TermuxTransferApp:
         layout.pack(fill=tk.BOTH, expand=True)
 
         ttk.Label(layout, text="💾 Config File Management",
-                  font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(0, 10))
+                  font=FONT_BOLD).pack(anchor="w", pady=(0, 10))
         cfg_frame = ttk.Frame(layout)
         cfg_frame.pack(fill=tk.X, pady=(0, 15))
         ttk.Label(cfg_frame, text="Current config:", foreground="#888888").pack(side=tk.LEFT)
@@ -1077,9 +1094,12 @@ class TermuxTransferApp:
         btn = self.upload_btn if direction == "upload" else self.download_btn
         btn_text = "Uploading..." if direction == "upload" else "Downloading..."
 
-        def disable_btn():
+        def start_transfer():
             btn.configure(state="disabled", text=btn_text)
-        self.root.after(0, disable_btn)
+            self.progress_var.set(0)
+            self.progress_label.configure(text="0%")
+            self.progress_frame.pack(fill=tk.X, pady=(2, 0))
+        self.root.after(0, start_transfer)
 
         def task():
             try:
@@ -1096,6 +1116,13 @@ class TermuxTransferApp:
                         return remote_home
                     return p
 
+                def update_progress(idx, total, name):
+                    pct = int(idx * 100 / total) if total > 0 else 0
+                    def do_update():
+                        self.progress_var.set(pct)
+                        self.progress_label.configure(text=f"{pct}% ({idx}/{total})")
+                    self.root.after(0, do_update)
+
                 if direction == "upload":
                     total = len(files) * len(dests)
                     idx = 0
@@ -1106,6 +1133,7 @@ class TermuxTransferApp:
                             fname = os.path.basename(fpath)
                             remote_path = dest.rstrip("/") + "/" + fname
                             self.root.after(0, self.log, f"[{idx}/{total}] -> {remote_path}")
+                            update_progress(idx, total, fname)
                             self._sftp_put_recursive(sftp, fpath, remote_path)
                 else:
                     total = len(files)
@@ -1115,18 +1143,22 @@ class TermuxTransferApp:
                         fname = os.path.basename(rpath.rstrip("/"))
                         local_path = os.path.join(local_dir, fname)
                         self.root.after(0, self.log, f"[{idx}/{total}] <- {local_path}")
+                        update_progress(idx, total, fname)
                         self._sftp_get_recursive(sftp, rpath, local_path)
 
                 sftp.close()
                 client.close()
                 self.root.after(0, self.log, "Transfer complete.")
+                self.root.after(0, lambda: self.progress_var.set(100))
+                self.root.after(0, lambda: self.progress_label.configure(text="100% Complete"))
             except Exception as e:
                 self.root.after(0, self.log, f"Error: {e}")
             finally:
                 orig_text = "⬆ Start Upload" if direction == "upload" else "⬇ Start Download"
-                def enable_btn():
+                def finish():
                     btn.configure(state="normal", text=orig_text)
-                self.root.after(0, enable_btn)
+                    self.root.after(3000, lambda: self.progress_frame.pack_forget())
+                self.root.after(0, finish)
 
         threading.Thread(target=task, daemon=True).start()
 
