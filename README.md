@@ -144,5 +144,4 @@ MIT
 
 ## Community
 
-LINUX DO - The New Ideal Community/usr/bin/bash: line 5: C:UsersAdministratorAppDataLocalTemphermes/hermes-snap-5412f5095d9d.sh: No such file or directory
-/usr/bin/bash: line 6: C:UsersAdministratorAppDataLocalTemphermes/hermes-cwd-5412f5095d9d.txt: No such file or directory
+LINUX DO - The New Ideal Community
