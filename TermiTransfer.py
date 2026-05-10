@@ -1,10 +1,12 @@
-import sys
 import os
 import json
-import subprocess
+import logging
 import threading
+import time
 import paramiko
 import copy
+
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
@@ -39,7 +41,7 @@ def load_config():
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
         except Exception as e:
-            print(f"Config load error: {e}")
+            logging.warning(f"Config load error: {e}")
             return {"profiles": dict(DEFAULT_PROFILES), "active_profile": "Default"}
         # Merge missing default presets into existing profiles
         saved_profiles = cfg.get("profiles", {})
@@ -70,7 +72,7 @@ def save_config(config):
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(cfg_copy, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        print(f"Config save error: {e}")
+        logging.warning(f"Config save error: {e}")
 
 class RoundedTabBar:
     """Rounded-corner tab bar using tk.Button that switches associated Frames."""
@@ -222,42 +224,23 @@ class TermuxTransferApp:
     def _toggle_theme(self):
         self._apply_theme("light" if self.current_theme == "dark" else "dark")
 
-    def _apply_theme(self, theme_name):
-
-        """Apply a color theme to the entire app."""
-
-        t = self.THEMES.get(theme_name, self.THEMES["dark"])
-
-        self.current_theme = theme_name
-
-        self.root.configure(bg=t["bg"])
-
+    def _apply_ttk_styles(self, t):
+        """Apply theme colors to ttk.Style."""
         style = ttk.Style()
-
         style.theme_use("clam")
-
         style.configure(".", background=t["bg"], foreground=t["fg"],
-
-                         fieldbackground=t["entry_bg"], insertcolor=t["fg"])
-
+                        fieldbackground=t["entry_bg"], insertcolor=t["fg"])
         style.configure("TFrame", background=t["bg"])
-
         style.configure("TLabel", background=t["bg"], foreground=t["fg"])
-
         style.configure("TButton", background=t["btn_bg"], foreground=t["btn_fg"],
-
-                         fieldbackground=t["btn_bg"])
-
+                        fieldbackground=t["btn_bg"])
         style.configure("TCheckbutton", background=t["bg"], foreground=t["fg"])
-
         style.configure("TLabelframe", background=t["bg"], foreground=t["fg"],
-                         bordercolor=t["bg"], relief="flat")
-
+                        bordercolor=t["bg"], relief="flat")
         style.configure("TLabelframe.Label", background=t["bg"], foreground=t["accent"])
-
         style.configure("TCombobox", fieldbackground=t["entry_bg"],
-                         foreground=t["entry_fg"], background=t["btn_bg"],
-                         selectbackground=t["accent"], selectforeground="#ffffff")
+                        foreground=t["entry_fg"], background=t["btn_bg"],
+                        selectbackground=t["accent"], selectforeground="#ffffff")
         style.map("TCombobox",
                   fieldbackground=[("readonly", t["entry_bg"]),
                                    ("focus", t["entry_bg"]),
@@ -268,33 +251,30 @@ class TermuxTransferApp:
                   background=[("readonly", t["btn_bg"]),
                               ("focus", t["btn_bg"])])
         style.configure("TEntry", fieldbackground=t["entry_bg"],
-                         foreground=t["entry_fg"])
+                        foreground=t["entry_fg"])
         style.map("TEntry",
                   fieldbackground=[("focus", t["entry_bg"]),
                                    ("disabled", t["bg"])],
                   foreground=[("focus", t["entry_fg"]),
                               ("disabled", t["fg"])])
-
         style.configure("TNotebook", background=t["bg"])
-
         style.configure("TNotebook.Tab", background=t["btn_bg"], foreground=t["btn_fg"])
-
         style.map("TNotebook.Tab",
                   background=[("selected", t["accent"])],
                   foreground=[("selected", "#ffffff")])
         style.map("TButton",
                   background=[("active", t["accent"])],
                   foreground=[("active", "#ffffff")])
-        # Font for all text-like widgets
-        font_spec = FONT
-        text_font = FONT_TEXT
+
+    def _apply_widget_styles(self, t):
+        """Apply theme colors to named and dynamic widgets."""
         # Text widgets (ScrolledText)
         for wname in ("log_output", "file_text", "remote_files_input", "config_preview"):
             w = getattr(self, wname, None)
             if w is not None:
                 try:
                     w.configure(bg=t["entry_bg"], fg=t["entry_fg"],
-                                insertbackground=t["fg"], font=text_font)
+                                insertbackground=t["fg"], font=FONT_TEXT)
                 except Exception:
                     pass
         # Force Entry/Combobox widgets to pick up dark colors
@@ -305,7 +285,7 @@ class TermuxTransferApp:
                 try:
                     w.configure(foreground=t["entry_fg"], background=t["entry_bg"],
                                 fieldbackground=t["entry_bg"],
-                                insertbackground=t["fg"], font=font_spec)
+                                insertbackground=t["fg"], font=FONT)
                 except Exception:
                     pass
         # Combobox: profile selector
@@ -313,7 +293,7 @@ class TermuxTransferApp:
             try:
                 self.profile_combo.configure(
                     foreground=t["entry_fg"], background=t["entry_bg"],
-                    fieldbackground=t["entry_bg"], font=font_spec)
+                    fieldbackground=t["entry_bg"], font=FONT)
             except Exception:
                 pass
         # Recursively apply theme to ALL Entry descendants (incl. dynamic presets)
@@ -323,17 +303,20 @@ class TermuxTransferApp:
                     try:
                         w.configure(foreground=t["entry_fg"],
                                     fieldbackground=t["entry_bg"],
-                                    insertbackground=t["fg"],
-                                    font=font_spec)
+                                    insertbackground=t["fg"], font=FONT)
                     except Exception:
                         pass
                 _style_entries(w)
         _style_entries(self.root)
 
-        # Sync tk.Button widgets (borderless style)
+    def _apply_theme(self, theme_name):
+        """Apply a color theme to the entire app."""
+        t = self.THEMES.get(theme_name, self.THEMES["dark"])
+        self.current_theme = theme_name
+        self.root.configure(bg=t["bg"])
+        self._apply_ttk_styles(t)
+        self._apply_widget_styles(t)
         self._restyle_buttons(t)
-
-        # Sync tab bar theme
         if getattr(self, "tab_bar", None) is not None:
             self.tab_bar.set_theme(t)
         self.config["theme"] = theme_name
@@ -495,6 +478,14 @@ class TermuxTransferApp:
         host = self.host_entry.get().strip() or "?"
         port = self.port_entry.get().strip() or "22"
         self._conn_summary_var.set(f"{user}@{host}:{port}")
+
+    def _refresh_all_ui(self):
+        """Refresh all UI elements from current profile data."""
+        self._load_profile_fields()
+        self._refresh_presets()
+        self._refresh_download_fields()
+        self._refresh_config_preview()
+        self._update_conn_summary()
 
     def _on_conn_field_edit(self):
         """Sync connection field edits to profile dict and refresh preview."""
@@ -691,11 +682,8 @@ class TermuxTransferApp:
         self.download_btn.pack(pady=10, fill=tk.X)
 
     def _build_config_tab(self):
-
         """Config import/export tab."""
-
         layout = ttk.Frame(self.config_tab, padding="20")
-
         layout.pack(fill=tk.BOTH, expand=True)
 
         ttk.Label(layout, text="💾 Config File Management",
@@ -769,11 +757,7 @@ class TermuxTransferApp:
         # Refresh UI
         self.profile_combo["values"] = list(self.profiles.keys())
         self.profile_var.set(self.active_profile)
-        self._load_profile_fields()
-        self._refresh_presets()
-        self._refresh_download_fields()
-        self._refresh_config_preview()
-        self._update_conn_summary()
+        self._refresh_all_ui()
 
         self.log("✅ Config imported successfully.", "success")
 
@@ -849,11 +833,7 @@ class TermuxTransferApp:
         save_config(self.config)
         self.active_profile = self.profile_var.get()
         self.config["active_profile"] = self.active_profile
-        self._load_profile_fields()
-        self._refresh_presets()
-        self._refresh_download_fields()
-        self._refresh_config_preview()
-        self._update_conn_summary()
+        self._refresh_all_ui()
 
     def _add_profile(self):
         """Add a new profile by name."""
@@ -871,11 +851,7 @@ class TermuxTransferApp:
         self.active_profile = name
         self.profile_combo["values"] = list(self.profiles.keys())
         self.profile_var.set(name)
-        self._load_profile_fields()
-        self._refresh_presets()
-        self._refresh_download_fields()
-        self._refresh_config_preview()
-        self._update_conn_summary()
+        self._refresh_all_ui()
 
     def _remove_profile(self):
         """Remove current profile (cannot remove last one)."""
@@ -890,11 +866,7 @@ class TermuxTransferApp:
         self.config["active_profile"] = self.active_profile
         self.profile_combo["values"] = list(self.profiles.keys())
         self.profile_var.set(self.active_profile)
-        self._load_profile_fields()
-        self._refresh_presets()
-        self._refresh_download_fields()
-        self._refresh_config_preview()
-        self._update_conn_summary()
+        self._refresh_all_ui()
 
     def _cycle_profile(self):
         """Alt+P: cycle to next profile."""
@@ -905,11 +877,7 @@ class TermuxTransferApp:
         self.active_profile = names[(idx + 1) % len(names)]
         self.config["active_profile"] = self.active_profile
         self.profile_var.set(self.active_profile)
-        self._load_profile_fields()
-        self._refresh_presets()
-        self._refresh_download_fields()
-        self._refresh_config_preview()
-        self._update_conn_summary()
+        self._refresh_all_ui()
 
     def _focus_first_preset(self):
         """Focus the first preset entry widget."""
@@ -1025,6 +993,9 @@ class TermuxTransferApp:
     def _make_ssh_client(self, port, key, user, host, password):
         """Create and connect an SSH client via paramiko."""
         client = paramiko.SSHClient()
+        # NOTE: AutoAddPolicy accepts unknown host keys automatically.
+        # This is convenient but vulnerable to MITM attacks on first connection.
+        # For production use, consider using RejectPolicy or loading known_hosts.
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         connect_kw = dict(
             hostname=host,
@@ -1043,7 +1014,6 @@ class TermuxTransferApp:
         last_update = [0]
         def callback(bytes_transferred, total_bytes):
             # Throttle updates to avoid overwhelming the UI
-            import time
             now = time.time()
             if now - last_update[0] < 0.1 and bytes_transferred < total_bytes:
                 return
@@ -1099,8 +1069,8 @@ class TermuxTransferApp:
             sftp.get(remote_path, local_path, callback=callback)
 
     def _get_cached_ssh(self, port, key, user, host, password):
-        """Get or create a cached SSH client for (host, port, user)."""
-        cache_key = (host, int(port) if port else 22, user)
+        """Get or create a cached SSH client for (host, port, user, password)."""
+        cache_key = (host, int(port) if port else 22, user, password)
         cached = self._ssh_cache.get(cache_key)
         if cached is not None:
             client, _ = cached
@@ -1194,34 +1164,6 @@ class TermuxTransferApp:
                     self.root.after(3000, lambda: self.progress_frame.pack_forget())
                 self.root.after(0, finish)
 
-        threading.Thread(target=task, daemon=True).start()
-
-    def run_command(self, cmd):
-        def task():
-            if isinstance(cmd, list):
-                cmd_str = " ".join(cmd)
-            else:
-                cmd_str = cmd
-            self.root.after(0, lambda: self.log(f"Executing: {cmd_str}", "info"))
-            try:
-                creationflags = 0
-                if os.name == "nt":
-                    creationflags = subprocess.CREATE_NO_WINDOW
-                process = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, creationflags=creationflags, shell=False,
-                )
-                stdout, stderr = process.communicate()
-                if stdout:
-                    self.root.after(0, lambda: self.log(f"STDOUT: {stdout}", "info"))
-                if stderr:
-                    self.root.after(0, lambda: self.log(f"STDERR: {stderr}", "warning"))
-                if process.returncode == 0:
-                    self.root.after(0, lambda: self.log("Success", "success"))
-                else:
-                    self.root.after(0, lambda: self.log(f"Failed with code {process.returncode}", "error"))
-            except Exception as e:
-                self.root.after(0, lambda: self.log(f"Error: {str(e)}", "error"))
         threading.Thread(target=task, daemon=True).start()
 
     def execute_upload(self):
