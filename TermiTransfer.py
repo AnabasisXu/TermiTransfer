@@ -585,6 +585,11 @@ class TermuxTransferApp:
         clear_btn.pack(anchor="e", pady=(0, 2))
         self.log_output = scrolledtext.ScrolledText(log_frame, state="disabled", height=10)
         self.log_output.pack(fill=tk.BOTH, expand=True)
+        # Log color tags
+        self.log_output.tag_configure("error", foreground="#f44747")
+        self.log_output.tag_configure("success", foreground="#6a9955")
+        self.log_output.tag_configure("warning", foreground="#d7ba7d")
+        self.log_output.tag_configure("info", foreground="#569cd6")
         # Progress bar (hidden by default)
         self.progress_frame = ttk.Frame(log_frame)
         self.progress_frame.pack(fill=tk.X, pady=(2, 0))
@@ -635,33 +640,55 @@ class TermuxTransferApp:
         self._refresh_presets()
 
     def _refresh_presets(self):
-        """Rebuild preset rows from current profile data (without recreating the whole tab)."""
+        """Rebuild preset rows from current profile data. Reuse widgets when count matches."""
         profile = self._get_profile()
         presets = profile.get("presets", {})
         saved_preset_sel = profile.get("_preset_selected", {})
+        preset_names = list(presets.keys())
+        preset_paths = list(presets.values())
 
-        # Clear existing preset rows
-        for w in self._preset_rows_frame.winfo_children():
-            w.destroy()
-        self.dest_vars = {}
-        self._preset_entries = {}
-        self._preset_remove_btns = {}
+        # Get existing rows
+        existing_rows = self._preset_rows_frame.winfo_children()
 
-        for name, path in presets.items():
-            var = tk.BooleanVar(value=saved_preset_sel.get(name, False))
-            self.dest_vars[name] = var
-            row = ttk.Frame(self._preset_rows_frame)
-            row.pack(fill=tk.X, anchor="w")
-            ttk.Checkbutton(row, variable=var).pack(side=tk.LEFT)
-            ent = ttk.Entry(row)
-            ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 4))
-            ent.insert(0, path)
-            self._preset_entries[name] = ent
-            rm_btn = self._make_btn(row, "✕", width=2, command=lambda n=name: self._remove_preset(n))
-            rm_btn.pack(side=tk.RIGHT)
-            self._preset_remove_btns[name] = rm_btn
+        # If count matches, reuse existing widgets
+        if len(existing_rows) == len(preset_names):
+            self.dest_vars = {}
+            self._preset_entries = {}
+            self._preset_remove_btns = {}
+            for i, (name, path) in enumerate(zip(preset_names, preset_paths)):
+                row = existing_rows[i]
+                children = row.winfo_children()
+                # children: [Checkbutton, Entry, Button]
+                var = tk.BooleanVar(value=saved_preset_sel.get(name, False))
+                self.dest_vars[name] = var
+                children[0].configure(variable=var)  # Checkbutton
+                children[1].delete(0, tk.END)
+                children[1].insert(0, path)  # Entry
+                self._preset_entries[name] = children[1]
+                children[2].configure(command=lambda n=name: self._remove_preset(n))  # Remove button
+                self._preset_remove_btns[name] = children[2]
+        else:
+            # Count changed, destroy and recreate
+            for w in existing_rows:
+                w.destroy()
+            self.dest_vars = {}
+            self._preset_entries = {}
+            self._preset_remove_btns = {}
+            for name, path in zip(preset_names, preset_paths):
+                var = tk.BooleanVar(value=saved_preset_sel.get(name, False))
+                self.dest_vars[name] = var
+                row = ttk.Frame(self._preset_rows_frame)
+                row.pack(fill=tk.X, anchor="w")
+                ttk.Checkbutton(row, variable=var).pack(side=tk.LEFT)
+                ent = ttk.Entry(row)
+                ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 4))
+                ent.insert(0, path)
+                self._preset_entries[name] = ent
+                rm_btn = self._make_btn(row, "✕", width=2, command=lambda n=name: self._remove_preset(n))
+                rm_btn.pack(side=tk.RIGHT)
+                self._preset_remove_btns[name] = rm_btn
 
-        # Apply theme to new entries
+        # Apply theme to entries
         t = self.THEMES[self.current_theme]
         font_spec = FONT
         for ent in self._preset_entries.values():
@@ -799,7 +826,7 @@ class TermuxTransferApp:
         self._refresh_config_preview()
         self._update_conn_summary()
 
-        self.log("✅ Config imported and merged successfully.")
+        self.log("✅ Config imported and merged successfully.", "success")
 
         messagebox.showinfo("Import Complete",
 
@@ -819,7 +846,7 @@ class TermuxTransferApp:
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to write file:\n{e}")
             return
-        self.log(f"✅ Config exported to: {path}")
+        self.log(f"✅ Config exported to: {path}", "success")
         messagebox.showinfo("Export Complete", f"Config saved to:\n{path}")
 
     # ──────────── Profile Management ────────────
@@ -901,9 +928,11 @@ class TermuxTransferApp:
     def _remove_profile(self):
         """Remove current profile (cannot remove last one)."""
         if len(self.profiles) <= 1:
-            self.log("Cannot remove the last profile.")
+            self.log("Cannot remove the last profile.", "warning")
             return
         name = self.active_profile
+        if not messagebox.askyesno("Remove Profile", f"Are you sure you want to remove profile '{name}'?"):
+            return
         del self.profiles[name]
         self.active_profile = list(self.profiles.keys())[0]
         self.config["active_profile"] = self.active_profile
@@ -1010,9 +1039,18 @@ class TermuxTransferApp:
     def clear_files(self):
         self.file_text.delete("1.0", tk.END)
 
-    def log(self, msg):
+    def log(self, msg, level="default"):
         self.log_output.configure(state="normal")
-        self.log_output.insert(tk.END, msg + "\n")
+        if level == "error":
+            self.log_output.insert(tk.END, msg + "\n", "error")
+        elif level == "success":
+            self.log_output.insert(tk.END, msg + "\n", "success")
+        elif level == "warning":
+            self.log_output.insert(tk.END, msg + "\n", "warning")
+        elif level == "info":
+            self.log_output.insert(tk.END, msg + "\n", "info")
+        else:
+            self.log_output.insert(tk.END, msg + "\n")
         self.log_output.see(tk.END)
         self.log_output.configure(state="disabled")
 
@@ -1048,30 +1086,48 @@ class TermuxTransferApp:
         client.connect(**connect_kw)
         return client
 
-    def _sftp_put_recursive(self, sftp, local_path, remote_path):
+    def _make_progress_callback(self, filename, direction):
+        """Create a progress callback for sftp.put/get that updates the progress bar."""
+        last_update = [0]
+        def callback(bytes_transferred, total_bytes):
+            # Throttle updates to avoid overwhelming the UI
+            import time
+            now = time.time()
+            if now - last_update[0] < 0.1 and bytes_transferred < total_bytes:
+                return
+            last_update[0] = now
+            if total_bytes > 0:
+                pct = int(bytes_transferred * 100 / total_bytes)
+                def update():
+                    self.progress_label.configure(text=f"{filename} {pct}% ({bytes_transferred}/{total_bytes} bytes)")
+                self.root.after(0, update)
+        return callback
+
+    def _sftp_put_recursive(self, sftp, local_path, remote_path, progress_callback=None):
         """Recursively upload a file or directory via SFTP."""
         if os.path.isfile(local_path):
-            self.root.after(0, self.log, f"  -> {remote_path}")
-            sftp.put(local_path, remote_path)
+            self.root.after(0, lambda: self.log(f"  -> {remote_path}", "info"))
+            callback = self._make_progress_callback(os.path.basename(local_path), "upload")
+            sftp.put(local_path, remote_path, callback=callback)
         elif os.path.isdir(local_path):
             try:
                 sftp.stat(remote_path)
             except FileNotFoundError:
                 sftp.mkdir(remote_path)
-                self.root.after(0, self.log, f"  mkdir {remote_path}")
+                self.root.after(0, lambda: self.log(f"  mkdir {remote_path}", "info"))
             for item in os.listdir(local_path):
                 local_item = os.path.join(local_path, item)
                 remote_item = remote_path.rstrip("/") + "/" + item
                 self._sftp_put_recursive(sftp, local_item, remote_item)
         else:
-            self.root.after(0, self.log, f"  SKIP (not found): {local_path}")
+            self.root.after(0, lambda: self.log(f"  SKIP (not found): {local_path}", "warning"))
 
-    def _sftp_get_recursive(self, sftp, remote_path, local_path):
+    def _sftp_get_recursive(self, sftp, remote_path, local_path, progress_callback=None):
         """Recursively download a file or directory via SFTP."""
         try:
             sftp.stat(remote_path)
         except FileNotFoundError:
-            self.root.after(0, self.log, f"  SKIP (not found): {remote_path}")
+            self.root.after(0, lambda: self.log(f"  SKIP (not found): {remote_path}", "warning"))
             return
         # Check if directory by attempting to list
         try:
@@ -1079,15 +1135,16 @@ class TermuxTransferApp:
             # It's a directory
             if not os.path.isdir(local_path):
                 os.makedirs(local_path, exist_ok=True)
-                self.root.after(0, self.log, f"  mkdir {local_path}")
+                self.root.after(0, lambda: self.log(f"  mkdir {local_path}", "info"))
             for entry in entries:
                 remote_item = remote_path.rstrip("/") + "/" + entry.filename
                 local_item = os.path.join(local_path, entry.filename)
                 self._sftp_get_recursive(sftp, remote_item, local_item)
         except IOError:
             # It's a file
-            self.root.after(0, self.log, f"  <- {local_path}")
-            sftp.get(remote_path, local_path)
+            self.root.after(0, lambda: self.log(f"  <- {local_path}", "info"))
+            callback = self._make_progress_callback(os.path.basename(local_path), "download")
+            sftp.get(remote_path, local_path, callback=callback)
 
     def _run_sftp(self, port, key, user, host, password, files, dests, direction="upload"):
         """Run SFTP transfer in a background thread."""
@@ -1103,10 +1160,10 @@ class TermuxTransferApp:
 
         def task():
             try:
-                self.root.after(0, self.log, f"Connecting to {user}@{host}:{port}...")
+                self.root.after(0, lambda: self.log(f"Connecting to {user}@{host}:{port}...", "info"))
                 client = self._make_ssh_client(port, key, user, host, password)
                 sftp = client.open_sftp()
-                self.root.after(0, self.log, "SFTP connected.")
+                self.root.after(0, lambda: self.log("SFTP connected.", "success"))
                 remote_home = sftp.normalize(".")
 
                 def resolve_remote(p):
@@ -1132,7 +1189,7 @@ class TermuxTransferApp:
                             idx += 1
                             fname = os.path.basename(fpath)
                             remote_path = dest.rstrip("/") + "/" + fname
-                            self.root.after(0, self.log, f"[{idx}/{total}] -> {remote_path}")
+                            self.root.after(0, lambda rp=remote_path: self.log(f"[{idx}/{total}] -> {rp}", "info"))
                             update_progress(idx, total, fname)
                             self._sftp_put_recursive(sftp, fpath, remote_path)
                 else:
@@ -1142,17 +1199,17 @@ class TermuxTransferApp:
                         rpath = resolve_remote(rpath)
                         fname = os.path.basename(rpath.rstrip("/"))
                         local_path = os.path.join(local_dir, fname)
-                        self.root.after(0, self.log, f"[{idx}/{total}] <- {local_path}")
+                        self.root.after(0, lambda lp=local_path, i=idx, t=total: self.log(f"[{i}/{t}] <- {lp}", "info"))
                         update_progress(idx, total, fname)
                         self._sftp_get_recursive(sftp, rpath, local_path)
 
                 sftp.close()
                 client.close()
-                self.root.after(0, self.log, "Transfer complete.")
+                self.root.after(0, lambda: self.log("Transfer complete.", "success"))
                 self.root.after(0, lambda: self.progress_var.set(100))
                 self.root.after(0, lambda: self.progress_label.configure(text="100% Complete"))
             except Exception as e:
-                self.root.after(0, self.log, f"Error: {e}")
+                self.root.after(0, lambda: self.log(f"Error: {e}", "error"))
             finally:
                 orig_text = "⬆ Start Upload" if direction == "upload" else "⬇ Start Download"
                 def finish():
@@ -1168,7 +1225,7 @@ class TermuxTransferApp:
                 cmd_str = " ".join(cmd)
             else:
                 cmd_str = cmd
-            self.root.after(0, self.log, f"Executing: {cmd_str}")
+            self.root.after(0, lambda: self.log(f"Executing: {cmd_str}", "info"))
             try:
                 creationflags = 0
                 if os.name == "nt":
@@ -1179,15 +1236,15 @@ class TermuxTransferApp:
                 )
                 stdout, stderr = process.communicate()
                 if stdout:
-                    self.root.after(0, self.log, f"STDOUT: {stdout}")
+                    self.root.after(0, lambda: self.log(f"STDOUT: {stdout}", "info"))
                 if stderr:
-                    self.root.after(0, self.log, f"STDERR: {stderr}")
+                    self.root.after(0, lambda: self.log(f"STDERR: {stderr}", "warning"))
                 if process.returncode == 0:
-                    self.root.after(0, self.log, "Success")
+                    self.root.after(0, lambda: self.log("Success", "success"))
                 else:
-                    self.root.after(0, self.log, f"Failed with code {process.returncode}")
+                    self.root.after(0, lambda: self.log(f"Failed with code {process.returncode}", "error"))
             except Exception as e:
-                self.root.after(0, self.log, f"Error: {str(e)}")
+                self.root.after(0, lambda: self.log(f"Error: {str(e)}", "error"))
         threading.Thread(target=task, daemon=True).start()
 
     def execute_upload(self):
@@ -1195,7 +1252,7 @@ class TermuxTransferApp:
         files_text = self.file_text.get("1.0", tk.END)
         files = [line.strip() for line in files_text.split("\n") if line.strip()]
         if not files:
-            self.log("No files selected!")
+            self.log("No files selected!", "warning")
             return
         # Read destinations from UI entries (not stale profile cache)
         dests = []
@@ -1203,7 +1260,16 @@ class TermuxTransferApp:
             if var.get() and name in self._preset_entries:
                 dests.append(self._preset_entries[name].get().strip())
         if not dests:
-            self.log("No destination selected!")
+            self.log("No destination selected!", "warning")
+            return
+        # Confirmation dialog
+        file_list = "\n".join(f"  • {os.path.basename(f)}" for f in files[:5])
+        if len(files) > 5:
+            file_list += f"\n  ... and {len(files) - 5} more"
+        dest_list = "\n".join(f"  • {d}" for d in dests)
+        if not messagebox.askyesno("Confirm Upload",
+                                   f"Upload {len(files)} file(s) to {len(dests)} destination(s)?\n\n"
+                                   f"Files:\n{file_list}\n\nDestinations:\n{dest_list}"):
             return
         self._run_sftp(port, key, user, host, password, files, dests, direction="upload")
 
@@ -1213,7 +1279,15 @@ class TermuxTransferApp:
         remote_files = [line.strip() for line in remote_files_text.split("\n") if line.strip()]
         local_dir = self.local_dest_entry.get().strip()
         if not remote_files:
-            self.log("No remote files specified!")
+            self.log("No remote files specified!", "warning")
+            return
+        # Confirmation dialog
+        file_list = "\n".join(f"  • {os.path.basename(r)}" for r in remote_files[:5])
+        if len(remote_files) > 5:
+            file_list += f"\n  ... and {len(remote_files) - 5} more"
+        if not messagebox.askyesno("Confirm Download",
+                                   f"Download {len(remote_files)} file(s)?\n\n"
+                                   f"Files:\n{file_list}\n\nSave to:\n  {local_dir or '.'}"):
             return
         self._run_sftp(port, key, user, host, password, remote_files, [local_dir or "."], direction="download")
 
