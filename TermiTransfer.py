@@ -4,10 +4,7 @@ import json
 import subprocess
 import threading
 import paramiko
-import hashlib
-import base64
 import copy
-from cryptography.fernet import Fernet
 
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
@@ -19,63 +16,16 @@ FONT = ("Microsoft YaHei UI", 9)
 FONT_BOLD = ("Microsoft YaHei UI", 11, "bold")
 FONT_TEXT = ("Microsoft YaHei UI", 11)
 
-def _get_fernet_key():
-    """Derive a Fernet key from machine-specific info."""
-    seed = (os.environ.get("USERNAME", "") + os.environ.get("USER", "") +
-            os.environ.get("COMPUTERNAME", "") + os.uname().nodename).encode()
-    return base64.urlsafe_b64encode(hashlib.sha256(seed).digest())
-_fernet = None
-def _get_fernet():
-    global _fernet
-    if _fernet is None:
-        _fernet = Fernet(_get_fernet_key())
-    return _fernet
-def encrypt_pw(plain):
-    """Encrypt a password for storage."""
-    if not plain:
-        return ""
-    return "enc:" + _get_fernet().encrypt(plain.encode()).decode()
-def decrypt_pw(stored):
-    """Decrypt a stored password (supports legacy plaintext)."""
-    if not stored:
-        return ""
-    if stored.startswith("enc:"):
-        try:
-            return _get_fernet().decrypt(stored[4:].encode()).decode()
-        except Exception:
-            return ""
-    return stored  # legacy plaintext, re-encrypted on next save
-
 # ─── Default Profiles ───
 
 DEFAULT_PROFILES = {
-    "Termux": {
-        "host": "192.168.1.104",
-        "port": "8022",
-        "user": "u0_a241",
-        "key": "D:/HOME/.ssh/termux_id_rsa",
-        "presets": {
-            "~/": "~/",
-            "~/.termux/fonts/": "~/.termux/fonts/",
-            "~/000apk/books": "~/000apk/books",
-            "~/org/": "~/org/",
-            "~/000apk/apk": "~/000apk/apk",
-        },
-        "remote_files": "",
-        "local_dest": "",
-    },
-    "Aliyun Server": {
-        "host": "112.124.200.88",
+    "Default": {
+        "host": "",
         "port": "22",
-        "user": "root",
+        "user": "",
         "key": "",
         "presets": {
             "~/": "~/",
-            "/opt/": "/opt/",
-            "/tmp/": "/tmp/",
-            "/etc/": "/etc/",
-            "~/.hermes/": "~/.hermes/",
-            "~/.openclaw/": "~/.openclaw/",
         },
         "remote_files": "",
         "local_dest": "",
@@ -83,51 +33,41 @@ DEFAULT_PROFILES = {
 }
 
 def load_config():
+    """Load config from disk. Password is never persisted."""
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
-                # Merge missing default presets into existing profiles
-                saved_profiles = cfg.get("profiles", {})
-                for name, defaults in DEFAULT_PROFILES.items():
-                    if name in saved_profiles:
-                        for key, val in defaults.items():
-                            if key not in saved_profiles[name]:
-                                saved_profiles[name][key] = val
-                            elif key == "presets" and isinstance(val, dict):
-                                for pk, pv in val.items():
-                                    if pk not in saved_profiles[name]["presets"]:
-                                        saved_profiles[name]["presets"][pk] = pv
-                    else:
-                        saved_profiles[name] = dict(defaults)
-                # Auto-encrypt legacy plaintext passwords
-                migrated = False
-                for _pd in cfg.get("profiles", {}).values():
-                    if "password" in _pd:
-                        pw = _pd["password"]
-                        if pw and not pw.startswith("enc:"):
-                            _pd["password"] = encrypt_pw(pw)
-                            migrated = True
-                        else:
-                            _pd["password"] = decrypt_pw(pw)
-                if migrated:
-                    try:
-                        with open(CONFIG_PATH, "w", encoding="utf-8") as wf:
-                            json.dump(cfg, wf, indent=2, ensure_ascii=False)
-                    except Exception:
-                        pass
-                return cfg
-        except Exception:
-            pass
-    return {"profiles": dict(DEFAULT_PROFILES), "active_profile": "Termux"}
+        except Exception as e:
+            print(f"Config load error: {e}")
+            return {"profiles": dict(DEFAULT_PROFILES), "active_profile": "Default"}
+        # Merge missing default presets into existing profiles
+        saved_profiles = cfg.get("profiles", {})
+        for name, defaults in DEFAULT_PROFILES.items():
+            if name in saved_profiles:
+                for key, val in defaults.items():
+                    if key not in saved_profiles[name]:
+                        saved_profiles[name][key] = val
+                    elif key == "presets" and isinstance(val, dict):
+                        for pk, pv in val.items():
+                            if pk not in saved_profiles[name]["presets"]:
+                                saved_profiles[name]["presets"][pk] = pv
+            else:
+                saved_profiles[name] = dict(defaults)
+        # Strip legacy password field if present (password is never saved)
+        for _pd in cfg.get("profiles", {}).values():
+            _pd.pop("password", None)
+        return cfg
+    return {"profiles": dict(DEFAULT_PROFILES), "active_profile": "Default"}
 
 def save_config(config):
+    """Save config to disk. Password is intentionally excluded."""
     try:
+        cfg_copy = copy.deepcopy(config)
+        # Remove password before writing to disk
+        for _pd in cfg_copy.get("profiles", {}).values():
+            _pd.pop("password", None)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            cfg_copy = copy.deepcopy(config)
-            for _pd in cfg_copy.get("profiles", {}).values():
-                if "password" in _pd:
-                    _pd["password"] = encrypt_pw(_pd["password"])
             json.dump(cfg_copy, f, indent=2, ensure_ascii=False)
     except Exception as e:
         print(f"Config save error: {e}")
@@ -213,15 +153,16 @@ class TermuxTransferApp:
         # Load config
         self.config = load_config()
         self.profiles = self.config.get("profiles", dict(DEFAULT_PROFILES))
-        self.active_profile = self.config.get("active_profile", "Termux")
+        self.active_profile = self.config.get("active_profile", "Default")
         if self.active_profile not in self.profiles:
             self.active_profile = list(self.profiles.keys())[0]
         self.dest_vars = {}
         self._dynamic_frame = None
-        self._conn_collapsed = True  # connection settings default collapsed
+        self._conn_collapsed = False  # connection settings default expanded
         self.current_theme = self.config.get("theme", "dark")
         if self.current_theme not in self.THEMES:
             self.current_theme = "dark"
+        self._ssh_cache = {}  # SSH connection cache: (host, port, user) -> client
         self.setup_ui()
         self.setup_shortcuts()
         self._apply_theme(self.current_theme)
@@ -400,6 +341,13 @@ class TermuxTransferApp:
     def on_close(self):
         self.save_current_profile()
         save_config(self.config)
+        # Close cached SSH connections
+        for client, _ in self._ssh_cache.values():
+            try:
+                client.close()
+            except Exception:
+                pass
+        self._ssh_cache.clear()
         self.root.destroy()
 
     def setup_shortcuts(self):
@@ -499,28 +447,24 @@ class TermuxTransferApp:
         ttk.Label(row2, text="🖥 Host:", underline=3).pack(side=tk.LEFT, padx=5)
         self.host_entry = ttk.Entry(row2)
         self.host_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.host_entry.bind("<KeyRelease>", lambda e: self._update_conn_summary())
+        self.host_entry.bind("<KeyRelease>", lambda e: self._on_conn_field_edit())
         ttk.Label(row2, text="🔌 Port:", underline=6).pack(side=tk.LEFT, padx=5)
         self.port_entry = ttk.Entry(row2, width=10)
         self.port_entry.pack(side=tk.LEFT, padx=5)
-        self.port_entry.bind("<KeyRelease>", lambda e: self._update_conn_summary())
+        self.port_entry.bind("<KeyRelease>", lambda e: self._on_conn_field_edit())
         ttk.Label(row2, text="👤 User:", underline=6).pack(side=tk.LEFT, padx=5)
         self.user_entry = ttk.Entry(row2)
         self.user_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.user_entry.bind("<KeyRelease>", lambda e: self._update_conn_summary())
-
-
-
-
-
-
+        self.user_entry.bind("<KeyRelease>", lambda e: self._on_conn_field_edit())
 
         ttk.Label(row2, text="🔑 Key:", underline=3).pack(side=tk.LEFT, padx=5)
         self.key_entry = ttk.Entry(row2)
         self.key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.key_entry.bind("<KeyRelease>", lambda e: self._on_conn_field_edit())
         ttk.Label(row2, text="🔒 Password:", underline=7).pack(side=tk.LEFT, padx=5)
         self.password_entry = ttk.Entry(row2, show="*")
         self.password_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.password_entry.bind("<KeyRelease>", lambda e: self._on_conn_field_edit())
 
         # Fill fields from active profile
         self._load_profile_fields()
@@ -551,6 +495,17 @@ class TermuxTransferApp:
         host = self.host_entry.get().strip() or "?"
         port = self.port_entry.get().strip() or "22"
         self._conn_summary_var.set(f"{user}@{host}:{port}")
+
+    def _on_conn_field_edit(self):
+        """Sync connection field edits to profile dict and refresh preview."""
+        self._update_conn_summary()
+        p = self._get_profile()
+        p["host"] = self.host_entry.get().strip()
+        p["port"] = self.port_entry.get().strip()
+        p["user"] = self.user_entry.get().strip()
+        p["key"] = self.key_entry.get().strip()
+        p["password"] = self.password_entry.get().strip()
+        self._refresh_config_preview()
 
     def _build_tabs(self):
         """Destroy and recreate tabs (called only from setup_ui)."""
@@ -801,16 +756,10 @@ class TermuxTransferApp:
         if not isinstance(imported, dict):
             messagebox.showerror("Import Error", "Config file must be a JSON object.")
             return
-        # Merge: imported values override current, but missing keys are preserved
-        def deep_merge(base, override):
-            for k, v in override.items():
-                if k in base and isinstance(base[k], dict) and isinstance(v, dict):
-                    deep_merge(base[k], v)
-                else:
-                    base[k] = v
-        deep_merge(self.config, imported)
-        # Refresh profiles and active_profile from merged config
+        # Replace current config entirely
+        self.config = imported
         self.profiles = self.config.get("profiles", {})
+        self.active_profile = self.config.get("active_profile", "")
         if self.active_profile not in self.profiles:
             self.active_profile = list(self.profiles.keys())[0] if self.profiles else ""
         self.config["active_profile"] = self.active_profile
@@ -826,14 +775,14 @@ class TermuxTransferApp:
         self._refresh_config_preview()
         self._update_conn_summary()
 
-        self.log("✅ Config imported and merged successfully.", "success")
+        self.log("✅ Config imported successfully.", "success")
 
         messagebox.showinfo("Import Complete",
 
-                            f"Config imported from:\n{path}\n\nAll profiles and settings merged.")
+                            f"Config imported from:\n{path}\n\nCurrent config replaced.")
 
     def _export_config(self):
-        """Export current config to a JSON file."""
+        """Export current config to a JSON file (password excluded)."""
         path = filedialog.asksaveasfilename(
             title="Export Config", defaultextension=".json",
             filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
@@ -841,8 +790,11 @@ class TermuxTransferApp:
         if not path:
             return
         try:
+            export = copy.deepcopy(self.config)
+            for _pd in export.get("profiles", {}).values():
+                _pd.pop("password", None)
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, indent=2, ensure_ascii=False)
+                json.dump(export, f, indent=2, ensure_ascii=False)
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to write file:\n{e}")
             return
@@ -912,7 +864,7 @@ class TermuxTransferApp:
             return
         self.save_current_profile()
         self.profiles[name] = {
-            "host": "", "port": "22", "user": "root", "key": "",
+            "host": "", "port": "22", "user": "", "key": "",
             "presets": {"~/": "~/"}, "remote_files": "", "local_dest": "",
         }
         self.config["active_profile"] = name
@@ -1146,6 +1098,28 @@ class TermuxTransferApp:
             callback = self._make_progress_callback(os.path.basename(local_path), "download")
             sftp.get(remote_path, local_path, callback=callback)
 
+    def _get_cached_ssh(self, port, key, user, host, password):
+        """Get or create a cached SSH client for (host, port, user)."""
+        cache_key = (host, int(port) if port else 22, user)
+        cached = self._ssh_cache.get(cache_key)
+        if cached is not None:
+            client, _ = cached
+            # Test if connection is still alive
+            try:
+                client.exec_command("echo ok", timeout=5)
+                return client, True  # reused
+            except Exception:
+                # Connection dead, remove from cache
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                del self._ssh_cache[cache_key]
+        # Create new connection
+        client = self._make_ssh_client(port, key, user, host, password)
+        self._ssh_cache[cache_key] = (client, None)
+        return client, False
+
     def _run_sftp(self, port, key, user, host, password, files, dests, direction="upload"):
         """Run SFTP transfer in a background thread."""
         btn = self.upload_btn if direction == "upload" else self.download_btn
@@ -1160,8 +1134,11 @@ class TermuxTransferApp:
 
         def task():
             try:
-                self.root.after(0, lambda: self.log(f"Connecting to {user}@{host}:{port}...", "info"))
-                client = self._make_ssh_client(port, key, user, host, password)
+                client, reused = self._get_cached_ssh(port, key, user, host, password)
+                if reused:
+                    self.root.after(0, lambda: self.log(f"Reusing connection to {user}@{host}:{port}", "info"))
+                else:
+                    self.root.after(0, lambda: self.log(f"Connecting to {user}@{host}:{port}...", "info"))
                 sftp = client.open_sftp()
                 self.root.after(0, lambda: self.log("SFTP connected.", "success"))
                 remote_home = sftp.normalize(".")
@@ -1204,7 +1181,7 @@ class TermuxTransferApp:
                         self._sftp_get_recursive(sftp, rpath, local_path)
 
                 sftp.close()
-                client.close()
+                # Keep client cached for reuse (don't close)
                 self.root.after(0, lambda: self.log("Transfer complete.", "success"))
                 self.root.after(0, lambda: self.progress_var.set(100))
                 self.root.after(0, lambda: self.progress_label.configure(text="100% Complete"))
@@ -1248,6 +1225,9 @@ class TermuxTransferApp:
         threading.Thread(target=task, daemon=True).start()
 
     def execute_upload(self):
+        # Auto-sync UI state to profile before executing
+        self.save_current_profile()
+        save_config(self.config)
         port, key, user, host, password = self.get_conn_args()
         files_text = self.file_text.get("1.0", tk.END)
         files = [line.strip() for line in files_text.split("\n") if line.strip()]
@@ -1274,6 +1254,9 @@ class TermuxTransferApp:
         self._run_sftp(port, key, user, host, password, files, dests, direction="upload")
 
     def execute_download(self):
+        # Auto-sync UI state to profile before executing
+        self.save_current_profile()
+        save_config(self.config)
         port, key, user, host, password = self.get_conn_args()
         remote_files_text = self.remote_files_input.get("1.0", tk.END)
         remote_files = [line.strip() for line in remote_files_text.split("\n") if line.strip()]
